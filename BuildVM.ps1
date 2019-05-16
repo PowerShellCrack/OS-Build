@@ -312,7 +312,7 @@ Import-Module vmware.powercli
 Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -InvalidCertificateAction Ignore -Scope AllUsers -Confirm:$false
 
 # To connect to multiple vcenters, run Set-PowerCLIConfiguration -DefaultVIServerMode Multiple
-Connect-VIServer vcsamgmt.s3i.org -Credential (Import-Clixml C:\vmware_creds.xml)
+Connect-VIServer $vcsaServer -Credential (Import-Clixml C:\vmware_creds.xml)
 $SourceVC = Connect-VIServer $vcsaServer -Credential $vcsaCreds
 
 #select source hosts and datastore used to clone template
