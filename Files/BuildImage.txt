@@ -1,0 +1,6 @@
+diskpart /s D:\CreatePartitions-UEFI.txt
+ApplyImage E:\Images\ThinImage.wim
+
+
+diskpart /s D:\CreatePartitions-UEFINoRecovery.txt
+ApplyImage-NoRecovery E:\Images\ThinImage.wim
