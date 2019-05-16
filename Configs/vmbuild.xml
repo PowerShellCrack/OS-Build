@@ -23,7 +23,7 @@
 	
 	<masterimages>
 		<vm id="1" name="WIN10-MDT-IMG" cpu="2" memory="4096" hdd="80" bootup="iso" iso="LiteTouchPE_VDI_x64.iso" network="VDI-POD1-VMPool" firmware="EFI" vbs="true" Lockdown="true" />
-		<vm id="2" name="WIN10-MDT-TEST" cpu="2" memory="4096" hdd="80" bootup="network" network="vxw-dvs-30-virtualwire-2-sid-8001-VDI-POD1-VMPool" firmware="EFI" vbs="true" Lockdown="true" />
+		<vm id="2" name="WIN10-MDT-TEST" cpu="2" memory="4096" hdd="80" bootup="network" network="VDI-POD1-VMPool" firmware="EFI" vbs="true" Lockdown="true" />
 	</masterimages>
 	
 	<snapshots>
