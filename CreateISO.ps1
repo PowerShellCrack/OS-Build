@@ -832,7 +832,7 @@ If($PrereqsReady){
     #As the ocsdimg is running (in the brackground)
     #Read the output of the oscdimg process to pull the percentage
     While (!($Proc.HasExited)){
-        Start-Sleep -Seconds 5
+        Start-Sleep -Seconds 1
         <#
         Get-Content -Path "$env:temp\ocsdimg_stdout.txt" | ForEach-Object {
             If($_ -like "*% Complete"){
@@ -842,10 +842,9 @@ If($PrereqsReady){
         #>
         $content = Get-Content -Path "$env:temp\ocsdimg_stderr.txt" -Tail 2
         If($content -like "*% Complete"){
-            [int]$status = ($content -replace "% Complete","") | Out-String
+            $status = [int](($content -replace "% Complete","") | Out-String).Trim()
         }
         Show-ProgressStatus -Message ("Creating ISO [{0}]..." -f $ISODestPath) -Step $status -MaxStep 100
-
     }
     $Proc.ExitCode
     
