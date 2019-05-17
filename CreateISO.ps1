@@ -36,23 +36,42 @@
 
 #>
 param(
-    [string]$ImageName,
-    
+    [Parameter(Mandatory=$true,Position=0,ValueFromPipeline=$true,ValueFromPipelineByPropertyName=$true)]
+    [ValidateNotNullOrEmpty()]
+    [Alias("WIMFile")]
     [string]$WIMSourceRoot,
-    
+
+    [parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [Alias("StagingDir")]
     [string]$StagingPath,
     
-    [string]$ISOPath,
-    
+    [parameter(Mandatory=$false)]
+    [Alias("SetupFiles")]
+    [string]$ISOSource,
+
+    [parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [Alias("ISOPath")]
+    [string]$ISODestPath,
+
+    [parameter(Mandatory=$false)]
     [string]$OscdimgPath,
 
+    [parameter(Mandatory=$false)]
     [switch]$Bootable,
 
+    [parameter(Mandatory=$false)]
     [string]$BootFilePath,
 
+    [parameter(Mandatory=$false)]
     [string]$EFIBootFilePath,
 
-    [switch]$SplitISO
+    [parameter(Mandatory=$false)]
+    [switch]$SplitISO,
+
+    [parameter(Mandatory=$false)]
+    [string]$ImageName
 )
 
 ##*===========================================================================
@@ -309,38 +328,20 @@ function Show-ProgressStatus
 }
 
 
-function Get-FileMD5 {
-    Param(
-        [string]$file
-        )
-    Begin
-    {
-        [string]${CmdletName} = $PSCmdlet.MyInvocation.MyCommand.Name
-    }
-    Process
-    {
-        $mode = [System.IO.FileMode]("open")
-        $access = [System.IO.FileAccess]("Read")
-        $md5 = New-Object System.Security.Cryptography.MD5CryptoServiceProvider
-        $fs = New-Object System.IO.FileStream($file,$mode,$access)
-        Write-LogEntry ("Checking Hash value for [{0}]. This can take a while..." -f $file) -Severity 1 -Source ${CmdletName} -Outhost
-        $Hash = $md5.ComputeHash($fs)
-        $fs.Close()
-    }
-    End {
-        [string]$Hash = $Hash
-        Write-LogEntry ("Hash is: [{0}]" -f $Hash) -Severity 4 -Source ${CmdletName} -Outhost
-        Return $Hash
-    }
-}
-
 function Copy-LatestFile{
     [CmdletBinding(SupportsShouldProcess = $True)]
     Param(
+        [Parameter(Mandatory=$true)]
+        [Alias("Source","Path")]
         $SourceFile,
+
+        [Parameter(Mandatory=$true)]
+        [Alias("Destination","Dest")]
         $DestFile,
+
+        [Parameter(Mandatory=$false)]
         [ValidateSet("Hash","Date","Size")]
-        [string]$Compareby
+        [string]$Compareby = "Size"
     )
 
     Begin
@@ -370,26 +371,32 @@ function Copy-LatestFile{
 
         #only compare source and destination if they already exists
         ElseIf( (Test-Path $SourceFile) -and (Test-Path $DestFile) ){
+            Write-LogEntry ("Preparing to copy [{0}] to [{1}]..." -f $SourceFile,$DestFile) -Severity 1 -Source ${CmdletName} -Outhost
+
             #grab the file name form the full path
             $SrcFileName = Split-Path $SourceFile -Leaf
             $DestFileName = Split-Path $DestFile -Leaf
 
             switch($Compareby){
-                "Date" {
-                            
+                "Date" { 
+                            Write-LogEntry ("Checking Date for [{0}]." -f $SourceFile) -Severity 1 -Source ${CmdletName} -Outhost
                             $SourceCompare = (Get-Item $SourceFile).LastWriteTimeUTC
+                            Write-LogEntry ("Comparing Date with [{0}]." -f $DestFile) -Severity 1 -Source ${CmdletName} -Outhost
                             $DestCompare = (Get-Item $DestFile).LastWriteTimeUTC
                        }
 
                 "Size" {
-                            
+                            Write-LogEntry ("Checking Size for [{0}]." -f $SourceFile) -Severity 1 -Source ${CmdletName} -Outhost
                             $SourceCompare = (Get-Item $SourceFile).Length
+                            Write-LogEntry ("Comparing Size with [{0}]." -f $DestFile) -Severity 1 -Source ${CmdletName} -Outhost
                             $DestCompare = (Get-Item $DestFile).Length
                        }
 
                 "Hash" {
-                            $SourceCompare = Get-FileMD5 $SourceFile
-                            $DestCompare = Get-FileMD5 $DestFile
+                            Write-LogEntry ("Checking Hash value for [{0}]. This can take a while..." -f $SourceFile) -Severity 1 -Source ${CmdletName} -Outhost
+                            $SourceCompare = Get-FileHash -Path $SourceFile -Algorithm MD5
+                            Write-LogEntry ("Comparing Hash value with [{0}]. This can take a while..." -f $DestFile) -Severity 1 -Source ${CmdletName} -Outhost
+                            $DestCompare = Get-FileHash -Path $DestFile -Algorithm MD5
                         }
 
             }
@@ -397,7 +404,8 @@ function Copy-LatestFile{
             if( $SourceCompare -ne $DestCompare )
             {
                 Write-LogEntry ("{2} Comparison [{0}] is different than [{1}]. Overwriting destination file with source file..." -f $SrcFileName,$DestFileName,$Compareby) -Severity 1 -Source ${CmdletName} -Outhost
-                Copy-File -Path $SourceFile -Destination $DestFile -Force -whatif:$WhatIfPreference
+                #Copy-File -Path $SourceFile -Destination $DestFile -Force -whatif:$WhatIfPreference
+                Copy-ItemWithProgress -Source $SourceFile -Destination $DestFile -Force
             }
             else
             {
@@ -409,7 +417,8 @@ function Copy-LatestFile{
         #otherwise just copy the file
         Else{
             Write-LogEntry ("No destination file to compare; Copying [{0}] to [{1}]..." -f $SourceFile,(Split-Path $DestFile -Parent)) -Severity 1 -Source ${CmdletName} -Outhost
-            Copy-File -Path $SourceFile -Destination $DestFile -Force -whatif:$WhatIfPreference
+            #Copy-File -Path $SourceFile -Destination $DestFile -Force -whatif:$WhatIfPreference
+            Copy-ItemWithProgress -Source $SourceFile -Destination $DestFile -Force
             #Import-Module BitsTransfer
             #Start-BitsTransfer -Source $Source -Destination $Destination -Description "Backup" -DisplayName "Backup"
         }
@@ -419,7 +428,70 @@ function Copy-LatestFile{
     }
 }
 
+Function Copy-ItemWithProgress
+{
+    [CmdletBinding()]
+    Param
+    (
+    [Parameter(Mandatory=$true,ValueFromPipelineByPropertyName=$true,Position=0)]
+    [string]$Source,
+    [Parameter(Mandatory=$true,Position=1)]
+    [string]$Destination,
+    [Parameter(Mandatory=$false,Position=3)]
+    [switch]$Force
+    )
 
+    Begin{
+        $Source = $Source
+    
+        #get the entire folder structure
+        $Filelist = Get-Childitem $Source -Recurse
+
+        #get the count of all the objects
+        $Total = $Filelist.count
+
+        #establish a counter
+        $Position = 0
+    }
+    Process{
+        #Stepping through the list of files is quite simple in PowerShell by using a For loop
+        foreach ($File in $Filelist)
+
+        {
+            #On each file, grab only the part that does not include the original source folder using replace
+            $Filename = ($File.Fullname).replace($Source,'')
+        
+            #rebuild the path for the destination:
+            $DestinationFile = ($Destination+$Filename)
+        
+            #get just the folder path
+            $DestinationPath = Split-Path $DestinationFile -Parent
+
+            #show progress
+            Show-ProgressStatus -Message "Copying data from $source to $Destination" -Step (($Position/$total)*100) -MaxStep $total
+
+            #create destination directories
+            If (-not (Test-Path $DestinationPath) ) {
+                New-Item $DestinationPath -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+            }
+
+            #do copy (enforce)
+            Try{
+                Copy-Item $File.FullName -Destination $DestinationFile -Force:$Force -ErrorAction:$VerbosePreference -Verbose:($PSBoundParameters['Verbose'] -eq $true) | Out-Null
+                Write-Verbose ("Copied file [{0}] to [{1}]" -f $File.FullName,$DestinationFile)
+            }
+            Catch{
+                Write-Host ("Unable to copy file in {0} to {1}; Error: {2}" -f $File.FullName,$DestinationFile ,$_.Exception.Message) -ForegroundColor Red
+                break
+            }
+            #bump up the counter
+            $Position++
+        }
+    }
+    End{
+        Show-ProgressStatus -Message "Copy completed" -Step $total -MaxStep $total
+    }
+}
 
 function Copy-File {
     [CmdletBinding(SupportsShouldProcess = $True)]
@@ -464,7 +536,7 @@ function Copy-File {
             #Begine file transfer with progress by bytes
             try {
                 $sw = [System.Diagnostics.Stopwatch]::StartNew();
-                [byte[]]$buff = new-object byte[] (4096*1024)
+                [byte[]]$buff = new-object byte[] (4096)
                 [long]$total = [long]$count = 0
                 do {
                     $count = $ffile.Read($buff, 0, $buff.Length)
@@ -526,8 +598,10 @@ If(Get-SMSTSENV){
     $FILESHARE_PASSWORD = $tsenv.Value("DomainAdminPassword")  
 }
 
+$PrereqsReady = $true
+
 ##*===========================================================================
-##* MAIN
+##* PREREQS
 ##*===========================================================================
 #grab latest wim and its path
 If($tsenv -and !$WIMSourceRoot){
@@ -560,12 +634,12 @@ If(-not(Test-Path $StagingPath)){Write-LogEntry ("MISSING PREREQS :: Staging Pat
 
 #Determine if ISOPath found and accessible
 Try{
-    Get-Item $ISOPath -ErrorAction Stop | Out-Null
+    Get-Item $ISODestPath -ErrorAction Stop | Out-Null
     
     #Determine if ISOPath is pointing to a directory
-    If( (Get-Item $ISOPath) -is [System.IO.DirectoryInfo]){
+    If( (Get-Item $ISODestPath) -is [System.IO.DirectoryInfo]){
         #build ISO
-        $ISOPath = Join-Path $ISOPath -ChildPath ($WIMName + "_Patched_"+ $WIMDate +".ISO")  
+        $ISODestPath = Join-Path $ISODestPath -ChildPath ($WIMName + "_Patched_"+ $WIMDate +".ISO")  
     }
 } 
 Catch [System.UnauthorizedAccessException] {
@@ -575,18 +649,18 @@ Catch [System.UnauthorizedAccessException] {
         $SecurePassword = ConvertTo-SecureString $FILESHARE_PASSWORD -AsPlainText -Force
         $FileShareCredential = New-Object System.Management.Automation.PSCredential ($FILESHARE_USER, $SecurePassword)
         Try{
-	        New-PSDrive -Name $FILESHARE_PS_DRIVE -PSProvider FileSystem -Root $ISOPath -Persist -Credential $FileShareCredential
+	        New-PSDrive -Name $FILESHARE_PS_DRIVE -PSProvider FileSystem -Root $ISODestPath -Persist -Credential $FileShareCredential
         }
         Catch{
-	        Write-Output "Unable to map drive $FILESHARE_PS_DRIVE to [$ISOPath]; credentials may be invalid"
+	        Write-Output "Unable to map drive $FILESHARE_PS_DRIVE to [$ISODestPath]; credentials may be invalid"
 	        Write-Output $_.Exception
 	        $PrereqsReady = $false
         }
 
         #Determine if ISOPath is pointing to a directory
-        If( (Get-Item $ISOPath) -is [System.IO.DirectoryInfo]){
+        If( (Get-Item $ISODestPath) -is [System.IO.DirectoryInfo]){
             #build ISO
-            $ISOPath = Join-Path $ISOPath -ChildPath ($WIMName + "_Patched_"+ $WIMDate +".ISO")  
+            $ISODestPath = Join-Path $ISODestPath -ChildPath ($WIMName + "_Patched_"+ $WIMDate +".ISO")  
         }
     }
     Else{
@@ -626,14 +700,15 @@ If($PrereqsReady){
         #Build bootdata params
         $BootData=('2#p0,e,b"{0}"#pEF,e,b"{1}"' -f $BootFile,$EFIBootFile)
         
-        Write-LogEntry ("Building bootable ISO [{0}]" -f $ISOPath) -Severity 2 -Outhost
-        Write-Host "RUNNING COMMAND: $OscdimgPath\oscdimg.exe -m -o -h -bootdata:$BootData -u2 -udfver102 '$StagingPath' '$ISOPath'"
-        $Proc = Start-Process -FilePath "$OscdimgPath\oscdimg.exe" -ArgumentList @('-m','-o','-h',"-bootdata:$BootData",'-u2','-udfver102',"-l$ImageName","$StagingPath","$ISOPath") -PassThru -Wait -NoNewWindow
+        Write-LogEntry ("Building bootable ISO [{0}]" -f $ISODestPath) -Severity 2 -Outhost
+        Write-Host "OSCDIMG COMMAND: $OscdimgPath\oscdimg.exe -m -o -h -bootdata:$BootData -u2 -udfver102 '$StagingPath' '$ISODestPath'"
+        $Proc = Start-Process -FilePath "$OscdimgPath\oscdimg.exe" -ArgumentList @('-m','-o','-h',"-bootdata:$BootData",'-u2','-udfver102',"-l$ImageName","$StagingPath","$ISODestPath") -PassThru -Wait -NoNewWindow
 
     }
     Else{
-        Write-LogEntry ("Building non-bootable ISO [{0}]" -f $ISOPath) -Severity 2 -Outhost
-        $Proc = Start-Process -FilePath "$OscdimgPath\oscdimg.exe" -ArgumentList @('-m','-o','-h','-u2','-udfver102',"-l$ImageName","$StagingPath","$ISOPath") -PassThru -Wait -NoNewWindow
+        Write-LogEntry ("Building non-bootable ISO [{0}]" -f $ISODestPath) -Severity 2 -Outhost
+        Write-Host "OSCDIMG COMMAND: $OscdimgPath\oscdimg.exe -m -o -h -u2 -u2 -udfver102 '$StagingPath' '$ISODestPath'"
+        $Proc = Start-Process -FilePath "$OscdimgPath\oscdimg.exe" -ArgumentList @('-m','-o','-h','-u2','-udfver102',"-l$ImageName","$StagingPath","$ISODestPath") -PassThru -Wait -NoNewWindow
     }
 
 
