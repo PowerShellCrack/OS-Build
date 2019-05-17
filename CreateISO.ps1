@@ -777,7 +777,7 @@ Else{
 ##*===========================================================================
 If($PrereqsReady){
     #Copy wim file is hash is different
-    #Copy-LatestFile -SourceFile $WIMPath -DestFile "$StagingPath\Sources\install.wim" -Compareby Hash
+    Copy-LatestFile -SourceFile $WIMPath -DestFile "$StagingPath\Sources\install.wim" -Compareby Hash
     
     #Use specified Boot files, otherwise default to default Staging paths
     If($BootFilePath -and $EFIBootFilePath){
