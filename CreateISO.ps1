@@ -41,14 +41,13 @@ param(
     [Alias("WIMFile")]
     [string]$WIMSourceRoot,
 
-    [parameter(Mandatory=$true)]
-    [ValidateNotNullOrEmpty()]
+    [parameter(Mandatory=$false)]
     [Alias("StagingDir")]
     [string]$StagingPath,
     
     [parameter(Mandatory=$false)]
     [Alias("SetupFiles")]
-    [string]$ISOSource,
+    [string]$SetupSource,
 
     [parameter(Mandatory=$true)]
     [ValidateNotNullOrEmpty()]
@@ -598,11 +597,11 @@ If(Get-SMSTSENV){
     $FILESHARE_PASSWORD = $tsenv.Value("DomainAdminPassword")  
 }
 
-$PrereqsReady = $true
-
 ##*===========================================================================
 ##* PREREQS
 ##*===========================================================================
+$PrereqsReady = $true
+Write-Host $PrereqsReady
 #grab latest wim and its path
 If($tsenv -and !$WIMSourceRoot){
     $FindWIM = Get-ChildItem -Path "$($tsenv.Value("DeployRoot"))\Captures" -Filter $ImageName*.wim -Recurse | sort LastWriteTime | Select -First 1
@@ -619,62 +618,127 @@ If($FindWIM){
     $WIMPath = $FindWIM.FullName
     $WIMName = ($FindWIM.BaseName -split "_|-|\s+")[0]
     $WIMDate = $FindWIM.LastWriteTime.ToString("yyyy-MM-dd")
-    Write-LogEntry ("WIM File used {0}" -f $WIMPath) -Severity 1 -Outhost
-    
+    Write-LogEntry ("WIM file being used [{0}]" -f $WIMPath) -Severity 1 -Outhost
 }
 Else{
-    Write-LogEntry ("MISSING PREREQS :: WIM File not found") -Severity 3 -Outhost
+    Write-LogEntry ("WIM file not found [{0}]" -f $WIMSourceRoot) -Severity 3 -Outhost
     $PrereqsReady = $false
 }
 
+#Build path for oscdimg.exe 
+If(!$OscdimgPath){$OscdimgPath = Join-Path $scriptDirectory -ChildPath "Files"}
 #Checking for oscdimg.exe. required to create ISO
-If(!$OscdimgPath){$OscdimgPath = Join-Path $scriptDirectory -ChildPath "Files";Write-LogEntry ("FOUND PREREQS :: Oscdimg.exe binary was found: {0}" -f $OscdimgPath) -Severity 4 -Outhost}
-If(-not(Test-Path $OscdimgPath\oscdimg.exe)){Write-LogEntry ("MISSING PREREQS :: Oscdimg.exe binary not found or not accessible") -Severity 3 -Outhost}
-If(-not(Test-Path $StagingPath)){Write-LogEntry ("MISSING PREREQS :: Staging Path not found or not accessible") -Severity 3 -Outhost}
+Write-LogEntry ("Validating oscdimg path [{0}]..." -f $OscdimgPath) -Severity 1 -Outhost
+If(-not(Test-Path "$OscdimgPath\oscdimg.exe") ){
+    Write-LogEntry ("Oscdimg.exe binary not found or not accessible") -Severity 3 -Outhost
+    $PrereqsReady = $false
+}
+Else{
+    $OscdimgPath = (Resolve-Path $OscdimgPath).Path
+    Write-LogEntry ("Resolved Oscdimg absolute path [{0}]..." -f $OscdimgPath) -Severity 1 -Outhost
+}
+
+#check if staging path is specified, if not use temp directory
+If($StagingPath){
+    Write-LogEntry ("Validating staging path [{0}]..." -f $StagingPath) -Severity 1 -Outhost
+
+    if(-not(Test-Path $StagingPath)){
+        Write-LogEntry ("Staging path not found or not accessible") -Severity 3 -Outhost
+        $PrereqsReady = $false
+    }
+    Else{
+        #resolve to absolute path always
+        $StagingPath = (Resolve-Path $StagingPath).Path
+        Write-LogEntry ("Resolved staging absolute path [{0}]..." -f $StagingPath) -Severity 1 -Outhost
+    }
+}
+Else{
+    $StagingPath = "$env:Temp\$ImageName"
+    Write-LogEntry ("Staging path set to {[0}]" -f $StagingPath) -Severity 3 -Outhost
+}
+
+#check if source and staging path is available
+If($SetupSource -and $StagingPath){
+    Write-LogEntry ("Validating setup source path [{0}] and staging path [{1}]..." -f $SetupSource,$StagingPath) -Severity 1 -Outhost
+
+    if(-not(Test-Path $SetupSource)){
+        Write-LogEntry ("Source path does not exist" -f $SetupSource) -Severity 3 -Outhost
+        $PrereqsReady = $false
+    }
+    Elseif(-not(Test-Path $StagingPath)){
+        Write-LogEntry ("Staging path does not exist" -f $StagingPath) -Severity 3 -Outhost
+        $PrereqsReady = $false
+    }
+    #simple check in staging/source path if bootable for setup.exe and boot.wim
+    ElseIf($Bootable -and ( (Test-Path "$SetupSource\setup.exe") -and (Test-Path "$SetupSource\sources\boot.wim") ) -and ( (-not(Test-Path "$StagingPath\setup.exe")) -or (-not(Test-Path "$StagingPath\sources\boot.wim")) ) ){
+        Copy-ItemWithProgress -Source $SetupSource -Destination $StagingPath -Force
+    }
+    Else{
+        #resolve to absolute path always
+        $SetupSource = (Resolve-Path $SetupSource).Path
+        Write-LogEntry ("Resolved source absolute path [{0}]..." -f $SetupSource) -Severity 1 -Outhost
+    }
+}
+
 
 #Determine if ISOPath found and accessible
-Try{
-    Get-Item $ISODestPath -ErrorAction Stop | Out-Null
-    
-    #Determine if ISOPath is pointing to a directory
-    If( (Get-Item $ISODestPath) -is [System.IO.DirectoryInfo]){
-        #build ISO
-        $ISODestPath = Join-Path $ISODestPath -ChildPath ($WIMName + "_Patched_"+ $WIMDate +".ISO")  
-    }
-} 
-Catch [System.UnauthorizedAccessException] {
-    Write-LogEntry ("MISSING PREREQS :: ISO Path is unaccessible") -Severity 3 -Outhost
-
-    If( ($FILESHARE_USER -ne $null) -and ($FILESHARE_PASSWORD -ne $null) ){
-        $SecurePassword = ConvertTo-SecureString $FILESHARE_PASSWORD -AsPlainText -Force
-        $FileShareCredential = New-Object System.Management.Automation.PSCredential ($FILESHARE_USER, $SecurePassword)
-        Try{
-	        New-PSDrive -Name $FILESHARE_PS_DRIVE -PSProvider FileSystem -Root $ISODestPath -Persist -Credential $FileShareCredential
+If($ISODestPath){
+    Try{
+        Write-LogEntry ("Validating ISO destination path [{0}]..." -f $ISODestPath) -Severity 1 -Outhost
+        
+        if(-not(Test-Path $ISODestPath)){
+            Write-LogEntry ("ISO destination path not found or not accessible") -Severity 3 -Outhost
+            break
         }
-        Catch{
-	        Write-Output "Unable to map drive $FILESHARE_PS_DRIVE to [$ISODestPath]; credentials may be invalid"
-	        Write-Output $_.Exception
-	        $PrereqsReady = $false
+        Else{
+            #resolve to absolute path always
+            $ISODestPath = (Resolve-Path $ISODestPath).Path
         }
 
         #Determine if ISOPath is pointing to a directory
         If( (Get-Item $ISODestPath) -is [System.IO.DirectoryInfo]){
             #build ISO
-            $ISODestPath = Join-Path $ISODestPath -ChildPath ($WIMName + "_Patched_"+ $WIMDate +".ISO")  
+            $ISODestPath = Join-Path $ISODestPath -ChildPath ($WIMName + "_Patched_"+ $WIMDate +".ISO")
+            Write-LogEntry ("Resolved ISO destination path [{0}]..." -f $ISODestPath) -Severity 1 -Outhost
         }
-    }
-    Else{
+    } 
+    Catch [System.UnauthorizedAccessException] {
+        Write-LogEntry ("ISO destination path is unaccessible") -Severity 3 -Outhost
+
+        If( ($FILESHARE_USER -ne $null) -and ($FILESHARE_PASSWORD -ne $null) ){
+            $SecurePassword = ConvertTo-SecureString $FILESHARE_PASSWORD -AsPlainText -Force
+            $FileShareCredential = New-Object System.Management.Automation.PSCredential ($FILESHARE_USER, $SecurePassword)
+            Try{
+	            New-PSDrive -Name $FILESHARE_PS_DRIVE -PSProvider FileSystem -Root $ISODestPath -Persist -Credential $FileShareCredential
+            }
+            Catch{
+	            Write-Output "Unable to map drive $FILESHARE_PS_DRIVE to [$ISODestPath]; credentials may be invalid"
+	            Write-Output $_.Exception
+	            $PrereqsReady = $false
+            }
+
+            #Determine if ISOPath is pointing to a directory
+            If( (Get-Item $ISODestPath) -is [System.IO.DirectoryInfo]){
+                #build ISO
+                $ISODestPath = Join-Path $ISODestPath -ChildPath ($WIMName + "_Patched_"+ $WIMDate +".ISO")  
+            }
+        }
+        Else{
+            $PrereqsReady = $false
+        }
+    } 
+    Catch [System.Management.Automation.ItemNotFoundException] {
+        Write-LogEntry ("ISO destination path not found") -Severity 3 -Outhost
+        $PrereqsReady = $false
+    } 
+    Catch {
+        # An unexpected error
+        Write-LogEntry $_.Exception -Severity 3 -Outhost
+        $Error[0]
         $PrereqsReady = $false
     }
-} 
-Catch [System.Management.Automation.ItemNotFoundException] {
-    Write-LogEntry ("MISSING PREREQS :: ISO Path not found:") -Severity 3 -Outhost
-    $PrereqsReady = $false
-} 
-Catch {
-    # An unexpected error
-    Write-LogEntry $_.Exception -Severity 3 -Outhost
-    $Error[0]
+}
+Else{
     $PrereqsReady = $false
 }
 
