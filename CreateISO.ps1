@@ -35,6 +35,7 @@
     https://deploymentresearch.com/Research/Post/399/How-to-REALLY-create-a-Windows-10-ISO-no-3rd-party-tools-needed
 
 #>
+[CmdLetBinding()]
 param(
     [Parameter(Mandatory=$true,Position=0,ValueFromPipeline=$true,ValueFromPipelineByPropertyName=$true)]
     [ValidateNotNullOrEmpty()]
@@ -46,8 +47,14 @@ param(
     [string]$StagingPath,
     
     [parameter(Mandatory=$false)]
-    [Alias("SetupFiles")]
+    [Alias("SetupFiles","SourcePath")]
     [string]$SetupSource,
+
+    [parameter(Mandatory=$false)]
+    [string]$OscdimgPath,
+
+    [parameter(Mandatory=$false)]
+    [string]$ImageName,
 
     [parameter(Mandatory=$true)]
     [ValidateNotNullOrEmpty()]
@@ -55,9 +62,9 @@ param(
     [string]$ISODestPath,
 
     [parameter(Mandatory=$false)]
-    [string]$OscdimgPath,
+    [switch]$SplitISO,
 
-    [parameter(Mandatory=$false)]
+    [parameter(Mandatory=$false)] 
     [switch]$Bootable,
 
     [parameter(Mandatory=$false)]
@@ -67,10 +74,7 @@ param(
     [string]$EFIBootFilePath,
 
     [parameter(Mandatory=$false)]
-    [switch]$SplitISO,
-
-    [parameter(Mandatory=$false)]
-    [string]$ImageName
+    [boolean]$CleanupTemp = $true
 )
 
 ##*===========================================================================
@@ -403,8 +407,8 @@ function Copy-LatestFile{
             if( $SourceCompare -ne $DestCompare )
             {
                 Write-LogEntry ("{2} Comparison [{0}] is different than [{1}]. Overwriting destination file with source file..." -f $SrcFileName,$DestFileName,$Compareby) -Severity 1 -Source ${CmdletName} -Outhost
-                #Copy-File -Path $SourceFile -Destination $DestFile -Force -whatif:$WhatIfPreference
-                Copy-ItemWithProgress -Source $SourceFile -Destination $DestFile -Force
+                Copy-File -Path $SourceFile -Destination $DestFile -Force -whatif:$WhatIfPreference
+                #Copy-ItemWithProgress -Source $SourceFile -Destination $DestFile -Force
             }
             else
             {
@@ -416,8 +420,8 @@ function Copy-LatestFile{
         #otherwise just copy the file
         Else{
             Write-LogEntry ("No destination file to compare; Copying [{0}] to [{1}]..." -f $SourceFile,(Split-Path $DestFile -Parent)) -Severity 1 -Source ${CmdletName} -Outhost
-            #Copy-File -Path $SourceFile -Destination $DestFile -Force -whatif:$WhatIfPreference
-            Copy-ItemWithProgress -Source $SourceFile -Destination $DestFile -Force
+            Copy-File -Path $SourceFile -Destination $DestFile -Force -whatif:$WhatIfPreference
+            #Copy-ItemWithProgress -Source $SourceFile -Destination $DestFile -Force
             #Import-Module BitsTransfer
             #Start-BitsTransfer -Source $Source -Destination $Destination -Description "Backup" -DisplayName "Backup"
         }
@@ -436,6 +440,8 @@ Function Copy-ItemWithProgress
     [string]$Source,
     [Parameter(Mandatory=$true,Position=1)]
     [string]$Destination,
+    [Parameter(Mandatory=$false,Position=2)]
+    [string]$Filter,
     [Parameter(Mandatory=$false,Position=3)]
     [switch]$Force
     )
@@ -444,7 +450,7 @@ Function Copy-ItemWithProgress
         $Source = $Source
     
         #get the entire folder structure
-        $Filelist = Get-Childitem $Source -Recurse
+        $Filelist = Get-Childitem $Source -Recurse -Exclude $filter
 
         #get the count of all the objects
         $Total = $Filelist.count
@@ -572,7 +578,35 @@ function Copy-File {
             Write-host ("What if: Performing the operation `"Copy File`" on target `"Item: {0} Destination: {1}." -f $from.$to)
         }
     }
+    End{
+        Write-Progress -Activity "Copying files" -status "Done copying files" -PercentComplete 100
+    }
 
+}
+
+Function Execute-Command ($commandTitle, $commandPath, $commandArguments)
+{
+  Try {
+    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pinfo.FileName = $commandPath
+    $pinfo.RedirectStandardError = $true
+    $pinfo.RedirectStandardOutput = $true
+    $pinfo.UseShellExecute = $false
+    $pinfo.Arguments = $commandArguments
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $pinfo
+    $p.Start() | Out-Null
+    [pscustomobject]@{
+        commandTitle = $commandTitle
+        stdout = $p.StandardOutput.ReadToEnd()
+        stderr = $p.StandardError.ReadToEnd()
+        ExitCode = $p.ExitCode
+    }
+    $p.WaitForExit()
+  }
+  Catch {
+     exit
+  }
 }
 
 ##*===========================================================================
@@ -601,7 +635,7 @@ If(Get-SMSTSENV){
 ##* PREREQS
 ##*===========================================================================
 $PrereqsReady = $true
-Write-Host $PrereqsReady
+
 #grab latest wim and its path
 If($tsenv -and !$WIMSourceRoot){
     $FindWIM = Get-ChildItem -Path "$($tsenv.Value("DeployRoot"))\Captures" -Filter $ImageName*.wim -Recurse | sort LastWriteTime | Select -First 1
@@ -627,6 +661,7 @@ Else{
 
 #Build path for oscdimg.exe 
 If(!$OscdimgPath){$OscdimgPath = Join-Path $scriptDirectory -ChildPath "Files"}
+
 #Checking for oscdimg.exe. required to create ISO
 Write-LogEntry ("Validating oscdimg path [{0}]..." -f $OscdimgPath) -Severity 1 -Outhost
 If(-not(Test-Path "$OscdimgPath\oscdimg.exe") ){
@@ -635,8 +670,31 @@ If(-not(Test-Path "$OscdimgPath\oscdimg.exe") ){
 }
 Else{
     $OscdimgPath = (Resolve-Path $OscdimgPath).Path
-    Write-LogEntry ("Resolved Oscdimg absolute path [{0}]..." -f $OscdimgPath) -Severity 1 -Outhost
+    Write-LogEntry ("Resolved Oscdimg absolute path [{0}]..." -f $OscdimgPath) -Severity 0 -Outhost
 }
+
+
+#If SetupSource is specified, validate it
+#if not use temp directory
+If($SetupSource){
+
+    Write-LogEntry ("Validating setup source path [{0}]..." -f $SetupSource) -Severity 1 -Outhost
+    
+    if(-not(Test-Path $SetupSource)){
+        Write-LogEntry ("Source path does not exist [{0}]" -f $SetupSource) -Severity 3 -Outhost
+        $PrereqsReady = $false
+    }
+    Else{
+        #resolve to absolute path always
+        $SetupSource = (Resolve-Path $SetupSource).Path
+        Write-LogEntry ("Resolved source absolute path [{0}]..." -f $SetupSource) -Severity 1 -Outhost
+    }
+}
+Else{
+    $SetupSource = "$env:Temp\$ImageName"
+    Write-LogEntry ("Source path set to [{0}]" -f $SetupSource) -Severity 0 -Outhost
+}
+
 
 #check if staging path is specified, if not use temp directory
 If($StagingPath){
@@ -654,29 +712,25 @@ If($StagingPath){
 }
 Else{
     $StagingPath = "$env:Temp\$ImageName"
-    Write-LogEntry ("Staging path set to {[0}]" -f $StagingPath) -Severity 3 -Outhost
+    Write-LogEntry ("Staging path set to [{0}]" -f $StagingPath) -Severity 0 -Outhost
 }
 
-#check if source and staging path is available
-If($SetupSource -and $StagingPath){
-    Write-LogEntry ("Validating setup source path [{0}] and staging path [{1}]..." -f $SetupSource,$StagingPath) -Severity 1 -Outhost
 
-    if(-not(Test-Path $SetupSource)){
-        Write-LogEntry ("Source path does not exist" -f $SetupSource) -Severity 3 -Outhost
-        $PrereqsReady = $false
+#check to see if either setup or staging has bootable files
+If($Bootable){
+     Write-LogEntry ("Validating bootable files...") -Severity 1 -Outhost
+    
+    #check if staging/source path is bootable and files exist: setup.exe and boot.wim, if not copy
+    If( ( (Test-Path "$SetupSource\setup.exe") -and (Test-Path "$SetupSource\sources\boot.wim") ) -and ( (-not(Test-Path "$StagingPath\setup.exe")) -or (-not(Test-Path "$StagingPath\sources\boot.wim")) ) ){
+        Write-LogEntry ("Copying source setup files from [{0}] to staging path [{1}]..." -f $SetupSource,$StagingPath) -Severity 1 -Outhost
+        Copy-ItemWithProgress -Source $SetupSource -Destination $StagingPath -Force -Filter install.wim
     }
-    Elseif(-not(Test-Path $StagingPath)){
-        Write-LogEntry ("Staging path does not exist" -f $StagingPath) -Severity 3 -Outhost
+    If( ( (-not(Test-Path "$SetupSource\setup.exe")) -and (-not(Test-Path "$SetupSource\sources\boot.wim")) ) -and ( (-not(Test-Path "$StagingPath\setup.exe")) -or (-not(Test-Path "$StagingPath\sources\boot.wim")) ) ){
+        Write-LogEntry ("Nether SetupSource [{0}] nor Staging path [{1}] have bootable files, Please extract a bootable ISO" -f $SetupSource,$StagingPath) -Severity 3 -Outhost
         $PrereqsReady = $false
-    }
-    #simple check in staging/source path if bootable for setup.exe and boot.wim
-    ElseIf($Bootable -and ( (Test-Path "$SetupSource\setup.exe") -and (Test-Path "$SetupSource\sources\boot.wim") ) -and ( (-not(Test-Path "$StagingPath\setup.exe")) -or (-not(Test-Path "$StagingPath\sources\boot.wim")) ) ){
-        Copy-ItemWithProgress -Source $SetupSource -Destination $StagingPath -Force
     }
     Else{
-        #resolve to absolute path always
-        $SetupSource = (Resolve-Path $SetupSource).Path
-        Write-LogEntry ("Resolved source absolute path [{0}]..." -f $SetupSource) -Severity 1 -Outhost
+        Write-LogEntry ("Bootable files are found...") -Severity 0 -Outhost
     }
 }
 
@@ -765,26 +819,60 @@ If($PrereqsReady){
         $BootData=('2#p0,e,b"{0}"#pEF,e,b"{1}"' -f $BootFile,$EFIBootFile)
         
         Write-LogEntry ("Building bootable ISO [{0}]" -f $ISODestPath) -Severity 2 -Outhost
-        Write-Host "OSCDIMG COMMAND: $OscdimgPath\oscdimg.exe -m -o -h -bootdata:$BootData -u2 -udfver102 '$StagingPath' '$ISODestPath'"
-        $Proc = Start-Process -FilePath "$OscdimgPath\oscdimg.exe" -ArgumentList @('-m','-o','-h',"-bootdata:$BootData",'-u2','-udfver102',"-l$ImageName","$StagingPath","$ISODestPath") -PassThru -Wait -NoNewWindow
+        Write-Host "OSCDIMG COMMAND: $OscdimgPath\oscdimg.exe -m -o -h -bootdata:$BootData -u2 -udfver102 '$StagingPath' '$ISODestPath'" -Verbose
+        $Proc = Start-Process -FilePath "$OscdimgPath\oscdimg.exe" -ArgumentList @('-m','-o','-h',"-bootdata:$BootData",'-u2','-udfver102',"-l$ImageName","$StagingPath","$ISODestPath") -PassThru -NoNewWindow -RedirectStandardOutput "$env:temp\ocsdimg_stdout.txt" -RedirectStandardError "$env:temp\ocsdimg_stderr.txt"
 
     }
     Else{
         Write-LogEntry ("Building non-bootable ISO [{0}]" -f $ISODestPath) -Severity 2 -Outhost
-        Write-Host "OSCDIMG COMMAND: $OscdimgPath\oscdimg.exe -m -o -h -u2 -u2 -udfver102 '$StagingPath' '$ISODestPath'"
-        $Proc = Start-Process -FilePath "$OscdimgPath\oscdimg.exe" -ArgumentList @('-m','-o','-h','-u2','-udfver102',"-l$ImageName","$StagingPath","$ISODestPath") -PassThru -Wait -NoNewWindow
+        Write-Host "OSCDIMG COMMAND: $OscdimgPath\oscdimg.exe -m -o -h -u2 -u2 -udfver102 '$StagingPath' '$ISODestPath'" -Verbose
+        $Proc = Start-Process -FilePath "$OscdimgPath\oscdimg.exe" -ArgumentList @('-m','-o','-h','-u2','-udfver102',"-l$ImageName","$StagingPath","$ISODestPath") -PassThru -NoNewWindow -RedirectStandardOutput "$env:temp\ocsdimg_stdout.txt" -RedirectStandardError "$env:temp\ocsdimg_stderr.txt"
     }
 
+    #As the ocsdimg is running (in the brackground)
+    #Read the output of the oscdimg process to pull the percentage
+    While (!($Proc.HasExited)){
+        Start-Sleep -Seconds 5
+        <#
+        Get-Content -Path "$env:temp\ocsdimg_stdout.txt" | ForEach-Object {
+            If($_ -like "*% Complete"){
+                $status = ($_ -replace "% Complete","")
+            }
+        }
+        #>
+        $content = Get-Content -Path "$env:temp\ocsdimg_stderr.txt" -Tail 2
+        If($content -like "*% Complete"){
+            [int]$status = ($content -replace "% Complete","") | Out-String
+        }
+        Show-ProgressStatus -Message ("Creating ISO [{0}]..." -f $ISODestPath) -Step $status -MaxStep 100
 
-    if($Proc.ExitCode -ne 0)
-    {
-        Write-LogEntry ("Failed to generate ISO with exitcode: {0}" -f $Proc.ExitCode) -Severity 2 -Outhost
+    }
+    $Proc.ExitCode
+    
+    <#
+    While (!($Proc.HasExited)){
+
+        foreach ($line in [System.IO.File]::ReadLines("$env:temp\ocsdimg_stdout.txt")) {
+            Start-Sleep -Seconds 5
+            If($line -like "*% Complete"){
+                $status = ($line -replace "% Complete","")
+            }
+        }
+        Show-ProgressStatus -Message ("Creating ISO [{0}]..." -f $ISODestPath) -Step $status -MaxStep 100
+    }
+    #>
+
+    #if process doesn't exist correctly
+    if($Proc.ExitCode -ne 0){Write-LogEntry ("Failed to generate ISO with exitcode: {0}" -f $Proc.ExitCode) -Severity 3 -Outhost}
+
+    #cleanup temp location
+    If($CleanupTemp){
+        If(Test-Path "$env:Temp\$ImageName"){
+            Remove-Item "$env:Temp\$ImageName" -Recurse -Force | Out-Null
+            Write-LogEntry ("Remove temp directories" -f "$env:Temp\$ImageName") -Severity 2 -Outhost
+        }
     }
 }
 Else{
     Write-LogEntry ("Prereqs failed, unable to build ISO. Check log for more details") -Severity 3 -Outhost
 }
-
-
-
-
