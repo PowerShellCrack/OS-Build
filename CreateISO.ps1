@@ -541,7 +541,7 @@ function Copy-File {
             #Begine file transfer with progress by bytes
             try {
                 $sw = [System.Diagnostics.Stopwatch]::StartNew();
-                [byte[]]$buff = new-object byte[] (4096)
+                [byte[]]$buff = new-object byte[] (4096*1024)
                 [long]$total = [long]$count = 0
                 do {
                     $count = $ffile.Read($buff, 0, $buff.Length)
@@ -584,30 +584,6 @@ function Copy-File {
 
 }
 
-Function Execute-Command ($commandTitle, $commandPath, $commandArguments)
-{
-  Try {
-    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-    $pinfo.FileName = $commandPath
-    $pinfo.RedirectStandardError = $true
-    $pinfo.RedirectStandardOutput = $true
-    $pinfo.UseShellExecute = $false
-    $pinfo.Arguments = $commandArguments
-    $p = New-Object System.Diagnostics.Process
-    $p.StartInfo = $pinfo
-    $p.Start() | Out-Null
-    [pscustomobject]@{
-        commandTitle = $commandTitle
-        stdout = $p.StandardOutput.ReadToEnd()
-        stderr = $p.StandardError.ReadToEnd()
-        ExitCode = $p.ExitCode
-    }
-    $p.WaitForExit()
-  }
-  Catch {
-     exit
-  }
-}
 
 ##*===========================================================================
 ##* VARIABLES
@@ -801,7 +777,7 @@ Else{
 ##*===========================================================================
 If($PrereqsReady){
     #Copy wim file is hash is different
-    Copy-LatestFile -SourceFile $WIMPath -DestFile "$StagingPath\Sources\install.wim" -Compareby Hash
+    #Copy-LatestFile -SourceFile $WIMPath -DestFile "$StagingPath\Sources\install.wim" -Compareby Hash
     
     #Use specified Boot files, otherwise default to default Staging paths
     If($BootFilePath -and $EFIBootFilePath){
@@ -832,37 +808,18 @@ If($PrereqsReady){
     #As the ocsdimg is running (in the brackground)
     #Read the output of the oscdimg process to pull the percentage
     While (!($Proc.HasExited)){
-        Start-Sleep -Seconds 1
-        <#
-        Get-Content -Path "$env:temp\ocsdimg_stdout.txt" | ForEach-Object {
-            If($_ -like "*% Complete"){
-                $status = ($_ -replace "% Complete","")
-            }
-        }
-        #>
-        $content = Get-Content -Path "$env:temp\ocsdimg_stderr.txt" -Tail 2
+        Start-Sleep -Seconds 3
+        $content = Get-Content -Path "$env:temp\ocsdimg_stderr.txt" -Tail 1
         If($content -like "*% Complete"){
-            $status = [int](($content -replace "% Complete","") | Out-String).Trim()
+            $status = (($content -replace "% Complete","") | Out-String).Trim()
+            [int]$status = $status
         }
         Show-ProgressStatus -Message ("Creating ISO [{0}]..." -f $ISODestPath) -Step $status -MaxStep 100
     }
     $Proc.ExitCode
-    
-    <#
-    While (!($Proc.HasExited)){
-
-        foreach ($line in [System.IO.File]::ReadLines("$env:temp\ocsdimg_stdout.txt")) {
-            Start-Sleep -Seconds 5
-            If($line -like "*% Complete"){
-                $status = ($line -replace "% Complete","")
-            }
-        }
-        Show-ProgressStatus -Message ("Creating ISO [{0}]..." -f $ISODestPath) -Step $status -MaxStep 100
-    }
-    #>
 
     #if process doesn't exist correctly
-    if($Proc.ExitCode -ne 0){Write-LogEntry ("Failed to generate ISO with exitcode: {0}" -f $Proc.ExitCode) -Severity 3 -Outhost}
+    #if($Proc.ExitCode -ne 0){Write-LogEntry ("Failed to generate ISO with exitcode: {0}" -f $Proc.ExitCode) -Severity 3 -Outhost}
 
     #cleanup temp location
     If($CleanupTemp){
