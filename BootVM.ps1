@@ -41,50 +41,6 @@ Function Get-ScriptPath {
     }
 }
 
-Function Get-SMSTSENV{
-    param([switch]$LogPath,[switch]$NoWarning)
-    
-    Begin{
-        ## Get the name of this function
-        [string]${CmdletName} = $PSCmdlet.MyInvocation.MyCommand.Name
-    }
-    Process{
-        try{
-            # Create an object to access the task sequence environment
-            $Script:tsenv = New-Object -COMObject Microsoft.SMS.TSEnvironment 
-            #test if variables exist
-            $tsenv.GetVariables()  #| % { Write-Output "$ScriptName - $_ = $($tsenv.Value($_))" }
-        }
-        catch{
-            If(${CmdletName}){$prefix = "${CmdletName} ::" }Else{$prefix = "" }
-            If(!$NoWarning){Write-Warning ("{0}Task Sequence environment not detected. Running in stand-alone mode." -f $prefix)}
-            
-            #set variable to null
-            $Script:tsenv = $null
-        }
-        Finally{
-            #set global Logpath
-            if ($tsenv){
-                #grab the progress UI
-                $Script:TSProgressUi = New-Object -ComObject Microsoft.SMS.TSProgressUI
-
-                # Query the environment to get an existing variable
-                # Set a variable for the task sequence log path
-                #$UseLogPath = $tsenv.Value("LogPath")
-                $UseLogPath = $tsenv.Value("_SMSTSLogPath")
-
-                # Convert all of the variables currently in the environment to PowerShell variables
-                $tsenv.GetVariables() | % { Set-Variable -Name "$_" -Value "$($tsenv.Value($_))" }
-            }
-            Else{
-                $UseLogPath = $env:Temp
-            }
-        }
-    }
-    End{
-        If($LogPath){return $UseLogPath}
-    }
-}
 
 Function Format-ElapsedTime($ts) {
     $elapsedTime = ""
@@ -263,14 +219,14 @@ $scriptPath = Get-ScriptPath
 [string]$scriptName = Split-Path $scriptPath -Leaf
 [string]$scriptBaseName = [System.IO.Path]::GetFileNameWithoutExtension($scriptName)
 
+## Variables: App Deploy Script Dependency Files
+[string]$ConfigDir = Join-Path -Path $scriptDirectory -ChildPath 'Configs'
+
 #build log name
 [string]$FileName = $scriptBaseName +'.log'
 #build global log fullpath
-$Global:LogFilePath = Join-Path (Get-SMSTSENV -LogPath -NoWarning) -ChildPath $FileName
+$Global:LogFilePath = Join-Path $env:TEMP -ChildPath $FileName
 Write-Host "logging to file: $LogFilePath" -ForegroundColor Cyan
-
-## Variables: App Deploy Script Dependency Files
-[string]$ConfigDir = Join-Path -Path $scriptDirectory -ChildPath 'Configs'
 
 ##* ==============================
 ##* CONFIGS
